@@ -158,6 +158,10 @@ button:disabled { cursor: not-allowed; }
 .fit.changed { animation: chord-in .17s ease-out; }
 @keyframes chord-in { from { opacity: .35; transform: translateY(.03em) scale(.985); } to { opacity: 1; transform: none; } }
 .stage-msg { max-width: 30em; margin: 0; text-align: center; color: var(--ink-2); font-size: 1rem; line-height: 1.7; text-wrap: balance; }
+.notice {
+  align-self: center; max-width: 34em; margin: 10px 0 0; padding: 8px 14px; border-radius: 12px;
+  background: var(--brass-soft); color: var(--ink); font-size: .92rem; line-height: 1.5; text-align: center; text-wrap: balance;
+}
 
 /* Chord symbol typography */
 .sym { display: inline-flex; align-items: baseline; white-space: nowrap; font-family: var(--font-display); line-height: 1; }
@@ -398,6 +402,7 @@ textarea {
         <div class="meta-left"><span class="key-label" id="keyLabel"></span><span class="meta-sep" aria-hidden="true">·</span><span id="srcLabel"></span><span class="prog-pos" id="progPos"></span></div>
         <div class="tempo-mark" id="tempoMark"></div>
       </div>
+      <p class="notice" id="notice" role="status" hidden></p>
       <div class="stage-main" id="stageMain">
         <div class="fit" id="fit" role="img" aria-label="">
           <div class="sym-main" id="symMain"></div>
@@ -880,7 +885,7 @@ const els = {};
   'beatRow', 'timeSig', 'beats', 'barCount', 'nextBox', 'nextSym', 'bpmDown', 'bpmUp', 'bpmOut', 'tapBtn', 'playBtn', 'playIcon', 'playLabel',
   'bpmNum', 'bpmRange', 'tsSeg', 'tsHint', 'barsDown', 'barsUp', 'barsOut', 'countIn', 'dispSeg', 'numSeg', 'numExample', 'showNext', 'visuals', 'audio', 'volume',
   'modeSeg', 'tonicChips', 'minorHint', 'srcSeg', 'srcDiatonic', 'srcRandom', 'srcProg', 'degChips', 'formSeg', 'orderSeg', 'invDia',
-  'rootChips', 'rootsAll', 'rootsNone', 'levelBtns', 'typeGroups', 'invRnd', 'presetList', 'customField', 'customProg', 'parseOut', 'resetBtn'].forEach(id => { els[id] = $(id); });
+  'rootChips', 'rootsAll', 'rootsNone', 'levelBtns', 'typeGroups', 'invRnd', 'presetList', 'customField', 'customProg', 'parseOut', 'resetBtn', 'notice'].forEach(id => { els[id] = $(id); });
 
 const tonic = () => tonicNote(S.tonic, S.mode);
 const beatsPerBar = () => TS_BEATS[S.ts];
@@ -895,7 +900,7 @@ const newGenerator = () => makeGenerator(S, progParsed().chords);
 
 /* ---------- Engine ---------- */
 const engine = {
-  ctx: null, master: null, useAudio: false, running: false, begun: false, timer: 0, raf: 0,
+  ctx: null, master: null, useAudio: false, stale: false, audioCheckAt: 0, running: false, begun: false, timer: 0, raf: 0,
   nextTime: 0, queue: [], countLeft: 0, countTotal: 0,
   pos: 0, chordBeats: 4, globalBeat: 0, current: null, upcoming: null,
 };
@@ -910,22 +915,83 @@ function restView() {
   if (cb < bpb) for (let b = 0; b < bpb; b += cb) starts.push(b); else starts.push(0);
   return { chord: engine.current, next: engine.upcoming, count: false, bpb, barBeat: -1, starts, chordStart: false, barInChord: 1, barsTotal: Math.ceil(cb / bpb) };
 }
-function ensureAudio() {
+const NOTICE = {
+  hidden: '切換頁面時已自動暫停，按「開始」繼續。',
+  interrupted: '聲音被系統中斷，已暫停。按「開始」繼續。',
+  failed: '聲音未能啟動。請按「停止」再按「開始」；仍然無聲的話，請關閉這個分頁再重新開啟網站。',
+};
+function setNotice(text) {
+  if (els.notice.textContent === text && els.notice.hidden === !text) return;
+  els.notice.textContent = text;
+  els.notice.hidden = !text;
+}
+// An AudioContext is kept only while the page stays visible and the system leaves it alone.
+// After the user switches away, iOS Safari can leave a context suspended, or "running" but silent,
+// so the next tap on Start always builds a fresh one.
+function createContext() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  let ctx;
+  try { ctx = new AC({ latencyHint: 'interactive' }); } catch (e) { ctx = new AC(); }
+  const master = ctx.createGain();
+  master.gain.value = S.volume / 100;
+  master.connect(ctx.destination);
+  ctx.onstatechange = () => onAudioState(ctx);
+  engine.ctx = ctx;
+  engine.master = master;
+  engine.stale = false;
+  return ctx;
+}
+function retireContext() {
+  const old = engine.ctx;
+  engine.ctx = null;
+  engine.master = null;
+  engine.useAudio = false;
+  if (!old) return;
+  old.onstatechange = null;
+  try { const p = old.close(); if (p && p.catch) p.catch(() => {}); } catch (e) { /* ignore */ }
+}
+// Runs inside the user's tap, which iOS requires before audio may start.
+function prepareAudio() {
+  try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* ignore */ }
   try {
-    if (!engine.ctx) {
-      const AC = window.AudioContext || window.webkitAudioContext;
-      if (!AC) return null;
-      engine.ctx = new AC({ latencyHint: 'interactive' });
-      engine.master = engine.ctx.createGain();
-      engine.master.gain.value = S.volume / 100;
-      engine.master.connect(engine.ctx.destination);
-    }
-    if (navigator.audioSession) navigator.audioSession.type = 'playback';
-    if (engine.ctx.state !== 'running') engine.ctx.resume().catch(() => {});
-    const buf = engine.ctx.createBuffer(1, 1, 22050), src = engine.ctx.createBufferSource();
-    src.buffer = buf; src.connect(engine.ctx.destination); src.start(0);
+    if (engine.ctx && (engine.stale || engine.ctx.state !== 'running')) retireContext();
+    const ctx = engine.ctx || createContext();
+    if (!ctx) return null;
+    if (ctx.state !== 'running') { const p = ctx.resume(); if (p && p.catch) p.catch(() => {}); }
+    const buf = ctx.createBuffer(1, 1, 22050), src = ctx.createBufferSource();
+    src.buffer = buf; src.connect(ctx.destination); src.start(0);
   } catch (e) { /* audio unavailable: run silently */ }
   return engine.ctx;
+}
+function onAudioState(ctx) {
+  if (ctx !== engine.ctx || ctx.state === 'running') return;
+  // The system took the audio away (a call, Siri, another app or tab): pause, and rebuild audio on the next tap.
+  engine.stale = true;
+  if (engine.running && engine.useAudio) {
+    stop();
+    setNotice(document.visibilityState === 'hidden' ? NOTICE.hidden : NOTICE.interrupted);
+  }
+}
+// When audio comes up late (a slow iOS audio session), it joins the run that started silently.
+function switchToAudioClock() {
+  const offset = engine.ctx.currentTime - performance.now() / 1000;
+  engine.nextTime += offset;
+  for (const e of engine.queue) e.t += offset;
+  engine.useAudio = true;
+  engine.audioCheckAt = 0;
+  if (els.notice.textContent === NOTICE.failed) setNotice('');
+}
+// Cut off clicks already handed to the audio system, so nothing sounds after Stop.
+function silencePending() {
+  const ctx = engine.ctx;
+  if (!ctx || !engine.master) return;
+  try {
+    engine.master.disconnect();
+    engine.master = ctx.createGain();
+    engine.master.gain.value = S.volume / 100;
+    engine.master.connect(ctx.destination);
+  } catch (e) { /* ignore */ }
 }
 const clockNow = () => (engine.useAudio ? engine.ctx.currentTime : performance.now() / 1000);
 function outputLatency() {
@@ -980,6 +1046,12 @@ function nextEvent(t) {
 }
 function schedulerTick() {
   if (!engine.running) return;
+  if (!engine.useAudio && engine.ctx && engine.ctx.state === 'running') switchToAudioClock();
+  else if (!engine.useAudio && engine.audioCheckAt && performance.now() > engine.audioCheckAt) {
+    engine.audioCheckAt = 0;
+    engine.stale = true;
+    if (S.audio) setNotice(NOTICE.failed);
+  }
   const now = clockNow();
   if (engine.nextTime < now - 0.25) engine.nextTime = now + 0.05;
   while (engine.nextTime < now + 0.12) {
@@ -1003,16 +1075,20 @@ function frame() {
 }
 function start() {
   if (engine.running || gen.empty) return;
-  ensureAudio();
+  setNotice('');
+  const ctx = prepareAudio();
   engine.running = true;
   engine.begun = false;
   renderTransport();
   const go = () => { if (!engine.running || engine.begun) return; engine.begun = true; begin(); };
-  const ctx = engine.ctx;
-  if (ctx && ctx.state !== 'running') { ctx.resume().then(go, go); setTimeout(go, 300); } else go();
+  if (ctx && ctx.state !== 'running') {
+    try { const p = ctx.resume(); if (p && p.then) p.then(go, go); } catch (e) { /* ignore */ }
+    setTimeout(go, 300);
+  } else go();
 }
 function begin() {
   engine.useAudio = !!(engine.ctx && engine.ctx.state === 'running');
+  engine.audioCheckAt = engine.useAudio ? 0 : performance.now() + 1500;
   if (S.source === 'prog') { gen = newGenerator(); engine.current = gen.next(); engine.upcoming = gen.next(); }
   if (!engine.current) { engine.current = gen.next(); engine.upcoming = gen.next(); }
   const bpb = beatsPerBar();
@@ -1037,6 +1113,7 @@ function stop() {
   clearInterval(engine.timer);
   cancelAnimationFrame(engine.raf);
   engine.queue = [];
+  silencePending();
   releaseWake();
   if (S.source === 'prog') {
     gen = newGenerator();
@@ -1057,7 +1134,14 @@ async function requestWake() {
   try { if ('wakeLock' in navigator && document.visibilityState === 'visible' && !wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); } } catch (e) { wakeLock = null; }
 }
 function releaseWake() { try { if (wakeLock) wakeLock.release(); } catch (e) { /* ignore */ } wakeLock = null; }
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && engine.running) requestWake(); });
+// Leaving the page pauses practice and releases audio; returning needs a tap on Start, which builds fresh audio.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    if (engine.running) { stop(); setNotice(NOTICE.hidden); }
+    retireContext();
+  } else if (engine.running) requestWake();
+});
+window.addEventListener('pagehide', () => { if (engine.running) stop(); retireContext(); });
 
 /* ---------- Rendering: stage ---------- */
 let lastSig = '';
