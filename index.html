@@ -313,6 +313,8 @@ input[type="range"] { width: 100%; margin: 4px 0; accent-color: var(--brass); }
 .chips-12 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .chips-deg { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .chips-type { grid-template-columns: repeat(auto-fill, minmax(66px, 1fr)); }
+.chips-sound { grid-template-columns: repeat(auto-fill, minmax(76px, 1fr)); }
+.chips-sound .chip { font-family: var(--font-ui); font-size: .95rem; font-weight: 500; }
 .chip {
   min-height: 44px; padding: 6px 4px; border-radius: 10px;
   display: grid; justify-items: center; align-content: center; gap: 1px;
@@ -381,6 +383,17 @@ textarea {
 </style>
 </head>
 <body>
+<script>
+(function () {
+  var r = document.documentElement;
+  window.__cfHostTheme = r.getAttribute('data-theme');
+  try {
+    var t = JSON.parse(localStorage.getItem('chord-flash-hk:v1') || '{}').theme;
+    if (t === 'light' || t === 'dark') r.setAttribute('data-theme', t);
+  } catch (e) { /* storage unavailable */ }
+})();
+</script>
+
 <div class="app" id="app">
   <main class="practice" id="practice">
     <header class="topbar">
@@ -473,11 +486,19 @@ textarea {
         </div>
         <label class="switch-row" for="showNext"><span>顯示下一個和弦</span><input class="sw-input" type="checkbox" id="showNext" role="switch"><span class="switch" aria-hidden="true"></span></label>
         <label class="switch-row" for="visuals"><span>顯示拍子</span><input class="sw-input" type="checkbox" id="visuals" role="switch"><span class="switch" aria-hidden="true"></span></label>
+        <div class="field">
+          <span class="field-label" id="themeLabel">介面</span>
+          <div class="seg" id="themeSeg" aria-labelledby="themeLabel"></div>
+        </div>
       </section>
 
       <section class="group" aria-labelledby="g-click">
         <h3 id="g-click">節拍器</h3>
         <label class="switch-row" for="audio"><span>節拍器聲</span><input class="sw-input" type="checkbox" id="audio" role="switch"><span class="switch" aria-hidden="true"></span></label>
+        <div class="field">
+          <span class="field-label" id="soundLabel">音色</span>
+          <div class="chips chips-sound" id="soundChips" role="radiogroup" aria-labelledby="soundLabel"></div>
+        </div>
         <div class="field">
           <label class="field-label" for="volume">音量</label>
           <input id="volume" type="range" min="0" max="100" step="1">
@@ -832,8 +853,8 @@ const BAR_STEPS = [0.5, 1, 2, 3, 4, 6, 8];
 const TS_BEATS = { '4/4': 4, '3/4': 3, '2/4': 2, '6/8': 6 };
 const DEFAULTS = {
   bpm: 80, ts: '4/4', bars: 1, countIn: true,
-  display: 'both', numerals: 'roman', showNext: true, visuals: true,
-  audio: true, volume: 70,
+  display: 'both', numerals: 'roman', showNext: true, visuals: true, theme: 'system',
+  audio: true, sound: 'click', volume: 70,
   tonic: 0, mode: 'major',
   source: 'diatonic',
   degMajor: ['1', '2', '3', '4', '5', '6'], degMinor: ['1', 'b3', '4', '5', 'b6', 'b7'],
@@ -841,6 +862,10 @@ const DEFAULTS = {
   roots: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11], types: ['maj', 'min', 'dom7', 'min7'],
   prog: 'canon', custom: '1 5 6m 3m 4 1 4 5',
 };
+const SOUNDS = [
+  { id: 'click', zh: '電子' }, { id: 'beep', zh: '嗶聲' }, { id: 'tick', zh: '機械' }, { id: 'wood', zh: '木魚' },
+  { id: 'clave', zh: '響棒' }, { id: 'cowbell', zh: '牛鈴' }, { id: 'drum', zh: '鼓組' },
+];
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const pick = (v, list, d) => (list.includes(v) ? v : d);
 function sanitize(o) {
@@ -852,6 +877,8 @@ function sanitize(o) {
   for (const k of ['countIn', 'showNext', 'visuals', 'audio', 'inversions']) r[k] = typeof o[k] === 'boolean' ? o[k] : d[k];
   r.display = pick(o.display, ['name', 'degree', 'both'], d.display);
   r.numerals = pick(o.numerals, ['roman', 'arabic'], d.numerals);
+  r.theme = pick(o.theme, ['system', 'light', 'dark'], d.theme);
+  r.sound = pick(o.sound, SOUNDS.map(x => x.id), d.sound);
   r.volume = clamp(Math.round(Number(o.volume)), 0, 100);
   if (!Number.isFinite(r.volume)) r.volume = d.volume;
   r.tonic = Number.isInteger(o.tonic) ? mod(o.tonic, 12) : d.tonic;
@@ -883,7 +910,7 @@ const $ = id => document.getElementById(id);
 const els = {};
 ['app', 'practice', 'panel', 'openPanel', 'closePanel', 'muteBtn', 'keyLabel', 'srcLabel', 'progPos', 'tempoMark', 'stageMain', 'fit', 'symMain', 'symSub', 'stageMsg',
   'beatRow', 'timeSig', 'beats', 'barCount', 'nextBox', 'nextSym', 'bpmDown', 'bpmUp', 'bpmOut', 'tapBtn', 'playBtn', 'playIcon', 'playLabel',
-  'bpmNum', 'bpmRange', 'tsSeg', 'tsHint', 'barsDown', 'barsUp', 'barsOut', 'countIn', 'dispSeg', 'numSeg', 'numExample', 'showNext', 'visuals', 'audio', 'volume',
+  'bpmNum', 'bpmRange', 'tsSeg', 'tsHint', 'barsDown', 'barsUp', 'barsOut', 'countIn', 'dispSeg', 'numSeg', 'numExample', 'showNext', 'visuals', 'themeSeg', 'audio', 'soundChips', 'volume',
   'modeSeg', 'tonicChips', 'minorHint', 'srcSeg', 'srcDiatonic', 'srcRandom', 'srcProg', 'degChips', 'formSeg', 'orderSeg', 'invDia',
   'rootChips', 'rootsAll', 'rootsNone', 'levelBtns', 'typeGroups', 'invRnd', 'presetList', 'customField', 'customProg', 'parseOut', 'resetBtn', 'notice'].forEach(id => { els[id] = $(id); });
 
@@ -999,21 +1026,93 @@ function outputLatency() {
   const c = engine.ctx;
   return clamp((c.outputLatency || 0) + (c.baseLatency || 0), 0, 0.35);
 }
+/* SYNTH-START */
+// Every sound has three strengths: 3 = a new chord on the downbeat, 2 = downbeat or chord change, 1 = other beats.
+const noiseCache = new WeakMap();
+function noiseBuffer(ctx) {
+  let b = noiseCache.get(ctx);
+  if (!b) {
+    b = ctx.createBuffer(1, Math.floor(ctx.sampleRate * 0.25), ctx.sampleRate);
+    const d = b.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
+    noiseCache.set(ctx, b);
+  }
+  return b;
+}
+function envGain(ctx, dest, t, peak, attack, decay) {
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(peak, t + attack);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + attack + decay);
+  g.connect(dest);
+  return g;
+}
+function tone(ctx, dest, t, type, f0, f1, glide, peak, attack, decay) {
+  const o = ctx.createOscillator();
+  o.type = type;
+  o.frequency.setValueAtTime(f0, t);
+  if (f1 !== f0) o.frequency.exponentialRampToValueAtTime(f1, t + glide);
+  o.connect(envGain(ctx, dest, t, peak, attack, decay));
+  o.start(t); o.stop(t + attack + decay + 0.02);
+  return o;
+}
+function noiseHit(ctx, dest, t, type, freq, q, peak, decay) {
+  const src = ctx.createBufferSource(), f = ctx.createBiquadFilter();
+  src.buffer = noiseBuffer(ctx);
+  f.type = type; f.frequency.value = freq; f.Q.value = q;
+  src.connect(f); f.connect(envGain(ctx, dest, t, peak, 0.001, decay));
+  src.start(t); src.stop(t + decay + 0.03);
+}
+function synthClick(ctx, dest, t, level, sound) {
+  const i = level >= 3 ? 0 : level === 2 ? 1 : 2;
+  if (sound === 'beep') {
+    tone(ctx, dest, t, 'sine', [1760, 1320, 880][i], [1760, 1320, 880][i], 0, [0.7, 0.5, 0.36][i], 0.003, 0.075);
+  } else if (sound === 'tick') {
+    noiseHit(ctx, dest, t, 'bandpass', [3400, 2700, 2100][i], 2.5, [2.3, 1.7, 1.2][i], 0.028);
+    tone(ctx, dest, t, 'sine', [1250, 1000, 820][i], [1250, 1000, 820][i], 0, [0.3, 0.22, 0.15][i], 0.001, 0.018);
+  } else if (sound === 'wood') {
+    const f = [1150, 920, 740][i], p = [0.84, 0.6, 0.41][i];
+    tone(ctx, dest, t, 'sine', f * 1.5, f, 0.012, p, 0.001, 0.07);
+    tone(ctx, dest, t, 'triangle', f * 2.7, f * 2.7, 0, p * 0.3, 0.001, 0.025);
+  } else if (sound === 'clave') {
+    const f = [2640, 2350, 2090][i], p = [0.75, 0.55, 0.38][i];
+    tone(ctx, dest, t, 'sine', f, f, 0, p, 0.001, 0.09);
+    tone(ctx, dest, t, 'sine', f * 2.01, f * 2.01, 0, p * 0.15, 0.001, 0.03);
+  } else if (sound === 'cowbell') {
+    const m = [1.19, 1, 0.89][i], f = ctx.createBiquadFilter();
+    f.type = 'bandpass'; f.frequency.value = 1900 * m; f.Q.value = 1.1;
+    f.connect(envGain(ctx, dest, t, [0.6, 0.44, 0.31][i], 0.002, 0.16));
+    for (const hz of [540, 800]) {
+      const o = ctx.createOscillator();
+      o.type = 'square'; o.frequency.value = hz * m;
+      o.connect(f); o.start(t); o.stop(t + 0.19);
+    }
+  } else if (sound === 'drum') {
+    if (i < 2) {
+      tone(ctx, dest, t, 'sine', 165, 48, 0.09, [0.92, 0.72][i], 0.002, 0.17);
+      noiseHit(ctx, dest, t, 'highpass', 5000, 0.7, [0.3, 0.2][i], 0.012);
+    } else noiseHit(ctx, dest, t, 'highpass', 7000, 0.7, 0.55, 0.05);
+  } else {
+    const f = [1568, 1175, 880][i];
+    tone(ctx, dest, t, 'triangle', f, f * 0.9, 0.045, [0.9, 0.62, 0.42][i], 0.0015, 0.065);
+  }
+}
+/* SYNTH-END */
 function playClick(t, level) {
   if (!S.audio || !engine.useAudio) return;
-  try {
-    const ctx = engine.ctx, o = ctx.createOscillator(), g = ctx.createGain();
-    const f = level === 3 ? 1568 : level === 2 ? 1175 : 880;
-    const peak = level === 3 ? 0.9 : level === 2 ? 0.62 : 0.42;
-    o.type = 'triangle';
-    o.frequency.setValueAtTime(f, t);
-    o.frequency.exponentialRampToValueAtTime(f * 0.9, t + 0.045);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(peak, t + 0.0015);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.065);
-    o.connect(g); g.connect(engine.master);
-    o.start(t); o.stop(t + 0.08);
-  } catch (e) { /* ignore */ }
+  try { synthClick(engine.ctx, engine.master, t, level, S.sound); } catch (e) { /* ignore */ }
+}
+// Tapping a sound in settings plays a strong beat, then a normal one.
+function previewSound() {
+  if (engine.running && engine.useAudio && S.audio) return;
+  const ctx = prepareAudio();
+  if (!ctx) return;
+  const play = () => {
+    if (ctx !== engine.ctx || !engine.master) return;
+    try { const t = ctx.currentTime + 0.04; synthClick(ctx, engine.master, t, 3, S.sound); synthClick(ctx, engine.master, t + 0.32, 1, S.sound); } catch (e) { /* ignore */ }
+  };
+  if (ctx.state === 'running') play();
+  else { try { const p = ctx.resume(); if (p && p.then) p.then(play, () => {}); } catch (e) { /* ignore */ } }
 }
 function nextEvent(t) {
   const bpb = beatsPerBar();
@@ -1257,6 +1356,17 @@ function renderTransport() {
 /* ---------- Settings UI ---------- */
 const POOL_KEYS = new Set(['source', 'tonic', 'mode', 'degMajor', 'degMinor', 'form', 'order', 'inversions', 'roots', 'types', 'prog', 'custom']);
 const VIEW_KEYS = new Set(['display', 'numerals', 'tonic', 'mode']);
+// 'system' follows the device (or the host page's own theme switch); light and dark override it.
+const hostTheme = '__cfHostTheme' in window ? window.__cfHostTheme : document.documentElement.getAttribute('data-theme');
+const THEME_COLORS = { light: '#FAF9F7', dark: '#131210' };
+const themeMetas = Array.from(document.querySelectorAll('meta[name="theme-color"]')).map(m => ({ m, orig: m.getAttribute('content') }));
+function applyTheme() {
+  const root = document.documentElement;
+  if (S.theme === 'light' || S.theme === 'dark') root.setAttribute('data-theme', S.theme);
+  else if (hostTheme) root.setAttribute('data-theme', hostTheme);
+  else root.removeAttribute('data-theme');
+  themeMetas.forEach(x => x.m.setAttribute('content', THEME_COLORS[S.theme] || x.orig));
+}
 function update(patch) {
   let pool = false;
   for (const k of Object.keys(patch)) {
@@ -1266,6 +1376,7 @@ function update(patch) {
   }
   if (S.bars === 0.5 && S.ts === '3/4') S.bars = 1;
   if ('volume' in patch && engine.master) engine.master.gain.value = S.volume / 100;
+  if ('theme' in patch) applyTheme();
   if (pool) onPoolChange();
   else if (!engine.running) view = restView();
   save();
@@ -1465,6 +1576,8 @@ function syncControls() {
   els.visuals.checked = S.visuals;
   els.audio.checked = S.audio;
   els.volume.value = S.volume;
+  syncSeg(els.themeSeg, S.theme);
+  for (const b of els.soundChips.children) b.setAttribute('aria-checked', String(b.dataset.value === S.sound));
   syncSeg(els.modeSeg, S.mode);
   keepFocus(els.tonicChips, renderTonicChips);
   els.minorHint.hidden = S.mode !== 'minor';
@@ -1485,6 +1598,17 @@ function initControls() {
   buildSeg(els.tsSeg, ['4/4', '3/4', '2/4', '6/8'].map(v => ({ value: v, label: v })), 'ts');
   buildSeg(els.dispSeg, [{ value: 'name', label: '和弦名稱' }, { value: 'degree', label: '只顯示級數' }, { value: 'both', label: '兩者' }], 'display');
   buildSeg(els.numSeg, [{ value: 'roman', label: '羅馬數字' }, { value: 'arabic', label: '阿拉伯數字' }], 'numerals');
+  buildSeg(els.themeSeg, [{ value: 'system', label: '跟隨系統' }, { value: 'light', label: '淺色' }, { value: 'dark', label: '深色' }], 'theme');
+  for (const snd of SOUNDS) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'chip';
+    b.setAttribute('role', 'radio');
+    b.dataset.value = snd.id;
+    b.textContent = snd.zh;
+    b.addEventListener('click', () => { update({ sound: snd.id }); previewSound(); });
+    els.soundChips.appendChild(b);
+  }
   buildSeg(els.modeSeg, [{ value: 'major', label: '大調' }, { value: 'minor', label: '小調' }], 'mode');
   buildSeg(els.srcSeg, [{ value: 'diatonic', label: '調內和弦' }, { value: 'random', label: '隨機和弦' }, { value: 'prog', label: '和弦進行' }], 'source');
   buildSeg(els.formSeg, [{ value: 'triad', label: '三和弦' }, { value: 'seventh', label: '七和弦' }, { value: 'mixed', label: '混合' }], 'form');
@@ -1604,6 +1728,7 @@ const onWide = () => setPanel(wide());
 if (mqWide.addEventListener) mqWide.addEventListener('change', onWide); else if (mqWide.addListener) mqWide.addListener(onWide);
 
 /* ---------- Boot ---------- */
+applyTheme();
 initControls();
 syncControls();
 setPanel(panelOpen);
